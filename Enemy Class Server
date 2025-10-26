@@ -1,0 +1,177 @@
+local EntityClass = {}
+local EnemyData = {}
+
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Knit = require(ReplicatedStorage.Packages.Knit)
+
+local Encoder = require(ReplicatedStorage.Shared.Encoder)
+local BezierPath = require(ReplicatedStorage.Shared.BezierPath)
+local EnemyConfig = require(ReplicatedStorage.Balancing.EnemyConfig)
+local TableFunctions = require(ReplicatedStorage.Shared.TableFunctions)
+local EnemyConfig = require(ReplicatedStorage.Balancing.EnemyConfig)
+
+local WaveService 
+
+EnemyData.AllEnemies = {}
+EntityClass.AllEnemies = {}
+EnemyData.__index = EnemyData
+
+local AvailableEnemyIds = {}
+local TotalCreatedIds = 0
+
+local MAX_MOBS_PER_UPDATE = 150
+local UPDATES_UNTIL_UPDATE = 5
+
+
+function EnemyData:SpawnEnemy()
+	if self.MovingConnection ~= nil then
+		return
+	end
+
+	local Nodes = self.Nodes
+	local Path = BezierPath.new(Nodes, 3)
+
+	self.Path = Path
+
+	self.MovingConnection = RunService.Heartbeat:Connect(function()
+		self.AlphaValue += ((workspace:GetServerTimeNow()-self.LastUpdatedTime) / (Path.TotalDistance / self.Speed) * workspace:GetAttribute("TimeScale"))
+		--TestPart.CFrame = Path:CalculateUniformCFrame(self.AlphaValue)
+		self.LastUpdatedTime = workspace:GetServerTimeNow() 
+		if self.AlphaValue >= 1 then
+			warn("Done Server")
+			self.MovingConnection:Disconnect()
+			self.MovingConnection = nil
+			EntityClass:EnemyDiedServer(self)
+			--EnemyData.AllEnemies[self.Id] = nil
+			--table.clear(self)
+			return
+		end
+	end)
+end
+
+
+function EnemyData:DamageEnemy(Damage)
+	self.Hp = math.clamp(self.Hp - Damage, 0, math.huge)
+	print("Damaging!", self.Dead, self.Id)
+	if self.Hp <= 0 then
+		EntityClass:EnemyDiedServer(self)
+	end
+end
+
+
+function EnemyData:ReturnId()
+	if AvailableEnemyIds[1] then
+		table.remove(AvailableEnemyIds, 1)
+		return AvailableEnemyIds[1]
+	end
+
+	TotalCreatedIds += 1
+	return TotalCreatedIds
+end
+
+function EntityClass.new(EnemyName, ForcedPath)
+	local self = setmetatable({}, EnemyData)
+	
+	self.EnemyName = EnemyName
+	self.Id = self:ReturnId()
+	self.LastUpdatedTime = workspace:GetServerTimeNow()
+	self.AlphaValue = 0
+	self.State = "Alive"
+	self.Hp = EnemyConfig[EnemyName].Health
+	self.MaxHp = EnemyConfig[EnemyName].Health
+	self.MovingConnection = nil
+	self.LastDataUpdateTime = 0
+	self.ClientUpdateReady = 0
+	self.Speed = EnemyConfig[EnemyName].Speed
+	self.Nodes = {}
+	self.PathCount = ForcedPath or math.random(1,#workspace.Waypoints:GetChildren())
+	self.DeathUpdateSent = false
+	
+	for _, node in workspace.Waypoints:FindFirstChild(self.PathCount):GetChildren() do
+		self.Nodes[tonumber(node.Name)] = node.Position
+	end
+	
+
+	ReplicatedStorage.EnemySpawned:FireAllClients(self)
+
+	EnemyData.AllEnemies[self.Id] = self
+	EntityClass.AllEnemies[self.Id] = self
+
+	return self
+end
+
+
+function EntityClass:EnemyDiedServer(Data)
+	task.spawn(function()
+		EnemyData.AllEnemies[Data.Id] = nil
+		EntityClass.AllEnemies[Data.Id] = nil
+
+		if Data.MovingConnection then
+			Data.MovingConnection:Disconnect()
+		end
+		
+		
+		ReplicatedStorage.EnemyDied:FireAllClients(Data.Id)
+		table.clear(Data)
+
+		if TableFunctions.GetTableLength(EnemyData.AllEnemies) == 0 then
+			WaveService:WaveComplete()
+		end	
+	end)
+end
+
+function EntityClass:GetEnemyDataFromID(EnemyId)
+	for Id, Data in EnemyData.AllEnemies do
+		if Id == EnemyId then
+			return Data
+		end
+	end
+
+	return nil
+end
+
+function EntityClass:GetEnemyDatas()
+	return EnemyData.AllEnemies
+end
+
+function EntityClass:Initialize()
+	WaveService = Knit.GetService("WaveService")
+	
+	local count = 0
+
+	RunService.Heartbeat:Connect(function()
+		count += 1
+		if count >= 120 then
+			count = 0
+			local ToSend = {}
+			local TotalSent = 0
+			for id, data in EnemyData.AllEnemies do
+				if not data then
+					continue
+				end
+				if TotalSent >= MAX_MOBS_PER_UPDATE then
+					print(ToSend)
+					game.ReplicatedStorage.UpdateEnemy:FireAllClients(ToSend)
+					return
+				end
+
+				if data.ClientUpdateReady >= UPDATES_UNTIL_UPDATE then
+					data.ClientUpdateReady = 0
+					TotalSent += 1
+					table.insert(ToSend, Encoder.EncodeEnemyData(id, data.AlphaValue))
+					
+
+					
+				else
+					data.ClientUpdateReady += 1 * ((workspace:GetAttribute("TimeScale") <= 1 and 1 or workspace:GetAttribute("TimeScale")))
+				end
+			end
+			game.ReplicatedStorage.UpdateEnemy:FireAllClients(ToSend)
+
+
+		end
+	end)
+end
+return EntityClass
