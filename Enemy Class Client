@@ -1,0 +1,256 @@
+local EntityClass = {}
+local EnemyData = {}
+
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+
+local Encoder = require(ReplicatedStorage.Shared.Encoder)
+local BezierPath = require(ReplicatedStorage.Shared.BezierPath)
+local Signal = require(ReplicatedStorage.Packages.Signal)
+local TableFunctions = require(ReplicatedStorage.Shared.TableFunctions)
+
+local UpdateSignal = Signal.new()
+
+EnemyData.AllEnemies = {}
+EnemyData.__index = EnemyData
+
+local TotalCreatedIds = 0
+local TotalActors = 15
+local PathsGenerated = {}
+local SavedPositions = {}
+local ActorsRequired = {}
+local ActorsTaken = {}
+
+
+function EnemyData:GetMovementData()
+	local Actor = script.Parent:FindFirstChild("Actor" .. self.Actor) :: Actor
+	if ActorsRequired[self.Actor] then
+		return ActorsRequired[self.Actor].EnemyValue[tostring(self.Id)] or nil
+	end
+	
+	ActorsRequired[self.Actor] = require(Actor)
+	
+	return ActorsRequired[self.Actor].EnemyValue[tostring(self.Id)] or nil
+end
+
+function EnemyData:SpawnEnemy()
+	if self.MovingConnection ~= nil then
+		return
+	end
+	
+	if not self.EnemyModel then
+		self:CreateModel()
+	end
+	
+
+	
+	local Actor = script.Parent:FindFirstChild("Actor" .. self.Actor)	:: Actor
+	
+	Actor:SendMessage("NewEnemy", self)
+
+	self.MovingConnection = RunService.Heartbeat:Connect(function()
+		local MovementData = self:GetMovementData()
+		if not MovementData then
+			return
+		end
+				
+		local AlphaValue = MovementData["AlphaValue"]
+		local CFramePosition = MovementData["Position"] :: CFrame
+		
+		self.EnemyModel.PrimaryPart.CFrame = CFramePosition + (CFramePosition.RightVector * self.SideOffset) + self.Offset
+		
+		self.AlphaValue = AlphaValue
+		self.CFrame = CFramePosition
+		
+		if AlphaValue >= 1 then
+			self.MovingConnection:Disconnect()
+			self.MovingConnection = nil
+			self:EnemyDied()
+			return
+		end
+
+	end)
+end
+
+function EnemyData:EnemyDied()
+	if self.Dead then
+		return
+	end
+	
+	self.Dead = true
+	local Actor = script.Parent:FindFirstChild("Actor" .. self.Actor)	:: Actor
+	Actor:SendMessage("EnemyDied", self.Id)
+	EnemyData.AllEnemies[self.Id] = nil
+	if self.MovingConnection then
+		self.MovingConnection:Disconnect()
+	end
+	
+	--self.UpdateConnection:Disconnect()
+	self.EnemyModel:Destroy()
+	
+	table.clear(self)
+end
+
+
+
+function EnemyData:CreateModel()
+	local Model = ReplicatedStorage.Assets.Enemies:FindFirstChild(self.EnemyName) :: Model
+	if not Model then return end
+	self.EnemyModel = Model:Clone()
+	self.EnemyModel.PrimaryPart:SetAttribute("Id", self.Id)
+	self.EnemyModel.Parent = workspace.Mobs
+	self.Offset += Vector3.new(0, self.EnemyModel:GetExtentsSize().Y/2, 0)
+	self:PlayAnimation("Walk")
+
+	--self.EnemyModel:SetPrimaryPartCFrame(workspace.Waypoints["1"].CFrame)
+	--self.EnemyModel.PrimaryPart.Anchored = false
+	--local AlignPosition = Instance.new("AlignPosition", self.EnemyModel.PrimaryPart)
+	--AlignPosition.Mode = "OneAttachment"
+	--AlignPosition.ApplyAtCenterOfMass = true
+	----AlignPosition.Position = workspace.Waypoints["1"].Position
+	--local Attachment = Instance.new("Attachment", self.EnemyModel.PrimaryPart)
+	--AlignPosition.Attachment0 = Attachment
+
+end
+
+function EnemyData:DamageEnemy(Damage)
+	self.Hp = math.clamp(self.Hp - Damage, 0, math.huge)
+	print("Health left: " .. self.Hp)
+	if self.Hp <= 0 then
+		task.spawn(function()
+			self:EnemyDied()
+		end)
+	end
+end
+
+
+function EnemyData:GetAnimation(AnimName)
+	return ReplicatedStorage.Assets.Animations.Enemies:FindFirstChild(self.EnemyName):FindFirstChild(AnimName)
+end
+
+function EnemyData:LoadAnimation(AnimName)
+	local Humanoid = self.EnemyModel:FindFirstChild("AnimationController") :: AnimationController
+	local Animator = Humanoid:FindFirstChild("Animator") :: Animator
+	local Animations = self:GetAnimation(AnimName)
+	local AnimationTrack = Animator:LoadAnimation(Animations)
+
+	if AnimName == "Walk"  then
+		AnimationTrack.Looped = true
+	else
+		AnimationTrack.Looped = false
+	end
+
+	AnimationTrack:AdjustSpeed(workspace:GetAttribute("TimeScale")) 
+
+	
+
+	self.LoadedAnimations[AnimName] = AnimationTrack
+end
+
+function EnemyData:PlayAnimation(AnimName)
+	if true  then
+		return
+	end
+	
+	local NewAnim = self.LoadedAnimations[AnimName]
+	if not NewAnim then
+		self:LoadAnimation(AnimName)
+		NewAnim = self.LoadedAnimations[AnimName]
+	end
+	
+	NewAnim:AdjustSpeed(workspace:GetAttribute("TimeScale")) 
+	
+	if NewAnim.Looped and not NewAnim.IsPlaying then
+		NewAnim:Play(0.15)
+	elseif not NewAnim.Looped then
+		NewAnim:Play(0.15)
+	end
+
+	for _, Track in self.EnemyModel.AnimationController:GetPlayingAnimationTracks() do
+		if Track.Name ~= AnimName  then
+			Track:Stop(0.15)
+		end
+	end
+end
+
+function EntityClass.new(data)
+	local self = setmetatable(data, EnemyData)
+	self.Offset =  Vector3.new(0,0,0)
+	self.SideOffset = math.random(-100,100)/50
+	self.Actor = math.random(1,TotalActors)
+	self.CFrame = workspace.Waypoints:FindFirstChild(self.PathCount):WaitForChild("1").CFrame
+	self.LoadedAnimations = {}	
+	
+	EnemyData.AllEnemies[self.Id] = self
+	
+	return self
+end
+
+
+
+function EntityClass:UpdateAlphaValue(Id, AlphaValue)
+	if not EnemyData.AllEnemies[Id] then
+		return warn("Grrr")
+	end
+	local self = EnemyData.AllEnemies[Id]
+	
+	local Actor = script.Parent:FindFirstChild("Actor" .. self.Actor)	:: Actor
+	Actor:SendMessage("UpdateAlphaValue", Id, AlphaValue)
+	self.AlphaValue = AlphaValue
+end
+
+function EntityClass:GetEnemyDataFromID(EnemyId)
+	for Id, Data in EnemyData.AllEnemies do
+		if Id == EnemyId then
+			return Data
+		end
+	end
+
+	warn("Unable to retrieve enemy data!!!")
+	return nil
+end
+
+function EntityClass:ResetActors()
+	local EnemiesPerActor = math.ceil(TableFunctions.GetTableLength(EnemyData.AllEnemies)/TotalActors)
+	local SplitTable = TableFunctions.SplitTable(EnemyData.AllEnemies, EnemiesPerActor)
+	--print(#SplitTable, TableFunctions.GetTableLength(EnemyData.AllEnemies))
+end
+
+function EntityClass:GetEnemyDatas()
+	return EnemyData.AllEnemies
+end
+
+function EntityClass:Initialize()
+	workspace:GetAttributeChangedSignal("TimeScale"):Connect(function()
+		local Value = workspace:GetAttribute("TimeScale")
+		
+		for _, Data in EnemyData.AllEnemies do
+			task.spawn(function()
+				for _, anim in Data.LoadedAnimations do
+					anim:AdjustSpeed(Value)
+				end
+			end)
+		end
+	end)
+	
+	for i = 1, TotalActors do
+		if i == 1 then
+			ActorsRequired[1] = require(script.Parent.Actor1.Movement)
+			continue
+		end
+		
+		local Actor = script.Parent.Actor1:Clone()
+		Actor.Name = "Actor" .. i
+		Actor.Parent = script.Parent
+		
+		
+		ActorsRequired[i] = require(Actor.Movement)
+	end
+
+	
+end
+
+
+return EntityClass
