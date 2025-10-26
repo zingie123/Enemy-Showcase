@@ -1,0 +1,115 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Knit = require(ReplicatedStorage.Packages.Knit)
+
+local Encoder = require(ReplicatedStorage.Shared.Encoder)
+local Promise = require(ReplicatedStorage.Packages.Promise)
+
+
+local TimescaleService = Knit.CreateService({
+	Name = "TimescaleService"
+})
+
+local TimesUpdated = {}
+
+function TimescaleService.Client:CalculateTimeBetweenTimes(Player, Time1, Time2)
+	debug.profilebegin("caclulate inbetween times")
+	local result, timer =  self.Server:CalculateTimeBetweenTimes(Time1, Time2):await()
+	debug.profileend()
+	return timer
+end
+
+function TimescaleService:GetLastUpdateTime(Time)
+	local FoundBestTime = nil
+	
+	for i = 1, #TimesUpdated do
+		local Data = TimesUpdated[i]
+		local UpdateTime = Data["Time"]
+		if Time >= UpdateTime and (not FoundBestTime or UpdateTime >= FoundBestTime) then
+			FoundBestTime = UpdateTime
+		end
+	end
+	
+	
+	
+	return FoundBestTime
+end
+
+function TimescaleService:GetTimesInbetweenTime(Time1, Time2)
+	local Time1Time = self:GetLastUpdateTime(Time1)
+	local Time2Time = self:GetLastUpdateTime(Time2)
+	
+	if not Time1Time then return end
+	if not Time2Time then return end
+	
+	local ToReturn = {}
+	local FoundStart = false
+	
+		
+	for i = 1, #TimesUpdated do
+		local Time = TimesUpdated[i]["Time"]
+		local TimescaleAmount = TimesUpdated[i]["TimeScale"]
+		
+		--print(FoundStart)
+		if Time >= Time1Time and Time <= Time2Time then
+			table.insert(ToReturn, {["Time"] = Time, ["TimeScale"] = TimescaleAmount})
+		end
+		
+	end
+	
+	
+	
+	return ToReturn
+end
+
+function TimescaleService:CalculateTimeBetweenTimes(Time1, Time2)
+	return Promise.new(function(resolve)
+		local InbetweenTimes = self:GetTimesInbetweenTime(Time1, Time2)
+		local Time1Time = self:GetLastUpdateTime(Time1)
+		local Time2Time = self:GetLastUpdateTime(Time2)
+
+		if not InbetweenTimes or #InbetweenTimes == 0 then
+			warn("rip")
+			resolve(0)
+			return
+		end
+
+		table.sort(InbetweenTimes, function(a,b)
+			return a.Time < b.Time
+		end)
+
+		local TotalTime = 0
+
+		local FirstRecord = InbetweenTimes[1]
+		TotalTime += (FirstRecord.Time - Time1) * FirstRecord.TimeScale
+		for i = 1, #InbetweenTimes - 1 do
+			local Current = InbetweenTimes[i]
+			local Next = InbetweenTimes[i + 1]
+			TotalTime += (Next.Time - Current.Time) * Current.TimeScale
+		end
+
+		local LastRecord = InbetweenTimes[#InbetweenTimes]
+		TotalTime += (Time2 - LastRecord.Time) * LastRecord.TimeScale
+
+		resolve(TotalTime)
+		return
+	end)
+
+end
+
+function TimescaleService:KnitStart()
+	--imesUpdated[(Encoder.EncodeTimeScaleTime(workspace:GetServerTimeNow()))] = workspace:GetAttribute("TimeScale")
+	
+	table.insert(TimesUpdated, {
+		["Time" ] = workspace:GetServerTimeNow(), 
+		["TimeScale"] = workspace:GetAttribute("TimeScale")
+	})
+	workspace:GetAttributeChangedSignal("TimeScale"):Connect(function()
+		table.insert(TimesUpdated, {
+			["Time" ] = workspace:GetServerTimeNow(), 
+			["TimeScale"] = workspace:GetAttribute("TimeScale")
+		})
+	end)
+end
+
+return TimescaleService
