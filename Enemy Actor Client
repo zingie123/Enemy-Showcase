@@ -1,0 +1,64 @@
+local Module = {}
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local BezierPath = require(ReplicatedStorage.Shared.BezierPath)
+
+local Actor = script:GetActor()
+
+local PathsGenerated = {}
+
+
+Module.EnemyData = {}
+Module.EnemyValue = {}
+
+Actor:BindToMessageParallel("NewEnemy", function(Data)
+	Module.EnemyData[tostring(Data.Id)] = Data
+end)
+
+Actor:BindToMessageParallel("UpdateEnemies", function(Data)
+	Module.EnemyData = Data
+end)
+
+Actor:BindToMessageParallel("UpdateAlphaValue", function(Id, AlphaValue)
+	Module.EnemyData[tostring(Id)].AlphaValue = AlphaValue
+end)
+
+Actor:BindToMessageParallel("EnemyDied", function(Id)
+	Module.EnemyData[tostring(Id)] = nil
+	Module.EnemyValue[tostring(Id)] = nil
+end)
+
+RunService.Heartbeat:ConnectParallel(function()
+	for id, Data in Module.EnemyData do
+		task.spawn(function()
+			if not Data or Data.AlphaValue > 1  then
+				return
+			end
+			local Path = PathsGenerated[Data.PathCount]
+
+			if not Path then
+				Path = BezierPath.new(Data.Nodes, 3)
+				PathsGenerated[Data.PathCount] = Path
+			end
+
+
+			Data.AlphaValue += ((workspace:GetServerTimeNow()-Data.LastUpdatedTime) / (Path.TotalDistance / Data.Speed) * workspace:GetAttribute("TimeScale"))
+			Data.LastUpdatedTime = workspace:GetServerTimeNow() 
+
+			local Position = Path:CalculateUniformCFrame(Data.AlphaValue)
+
+			Module.EnemyValue[tostring(Data.Id)] = {
+				AlphaValue = Data.AlphaValue,
+				Position = Position
+			}
+		end)
+		
+		--if Data.AlphaValue >= 1 then
+		--	Module.EnemyData[tostring(Data.Id)] = nil
+		--	Module.EnemyValue[tostring(Data.Id)] = nil
+		--end
+	end
+end)
+
+return Module
